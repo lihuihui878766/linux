@@ -296,6 +296,7 @@ void __init setup_arch(char **cmdline_p)
 #endif
 
 	riscv_fill_hwcap();
+	riscv_tlbflush_init();
 	apply_boot_alternatives();
 }
 
