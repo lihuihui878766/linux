@@ -929,6 +929,9 @@ static int rpmsg_probe(struct virtio_device *vdev)
 	/* and half is dedicated for TX */
 	vrp->sbufs = bufs_va + total_buf_space / 2;
 
+	/* From this point on, we can notify and get callbacks. */
+	virtio_device_ready(vdev);
+
 	/* set up the receive buffers */
 	for (i = 0; i < vrp->num_bufs / 2; i++) {
 		struct scatterlist sg;
@@ -982,9 +985,6 @@ static int rpmsg_probe(struct virtio_device *vdev)
 	 * device is ready.
 	 */
 	notify = virtqueue_kick_prepare(vrp->rvq);
-
-	/* From this point on, we can notify and get callbacks. */
-	virtio_device_ready(vdev);
 
 	/* tell the remote processor it can start sending messages */
 	/*
