@@ -866,7 +866,10 @@ enum acpi_madt_type {
 	ACPI_MADT_TYPE_GENERIC_TRANSLATOR = 15,
 	ACPI_MADT_TYPE_MULTIPROC_WAKEUP = 16,
 	ACPI_MADT_TYPE_RINTC = 24,
-	ACPI_MADT_TYPE_RESERVED = 25,	/* 25 to 0x7F are reserved */
+	ACPI_MADT_TYPE_IMSIC = 25,
+	ACPI_MADT_TYPE_IMSIC_GROUP = 26,
+	ACPI_MADT_TYPE_APLIC = 27,
+	ACPI_MADT_TYPE_RESERVED = 28,	/* 28 to 0x7F are reserved */
 	ACPI_MADT_TYPE_OEM_RESERVED = 0x80	/* 0x80 to 0xFF are reserved for OEM use */
 };
 
@@ -1105,6 +1108,44 @@ struct acpi_madt_rintc {
 	u32 flags;
 	u64 hartid;
 	u32 uid;
+};
+
+/* 25: RISC-V IMSIC */
+struct acpi_madt_imsic_group {
+	struct acpi_subtable_header header;
+	u8  version;
+	u8  id;
+	u16 reserved;
+	u16 model;
+	u16 num_interrupt_id;
+	u16 ipi_id;
+	u32 total_num_harts;
+	u8  guest_index_bits;
+	u8  hart_index_bits;
+	u8  group_index_bits;
+	u8  group_index_shift;
+};
+
+/* 26: RISC-V IMSIC_GROUP */
+struct acpi_madt_imsic {
+	struct acpi_subtable_header header;
+	u8  version;
+	u8  parent_id;
+	u32 imsic_size;
+	u64 imsic_addr;
+};
+
+/* 27: RISC-V APLIC */
+struct acpi_madt_aplic {
+	struct acpi_subtable_header header;
+	u8 version;
+	u8 id;
+	u16 reserved;
+	u16 model;
+	u16 num_interrupts;
+	u16 reserved2;
+	u32 aplic_size;
+	u64 aplic_addr;
 };
 
 /* 17: OEM data */
