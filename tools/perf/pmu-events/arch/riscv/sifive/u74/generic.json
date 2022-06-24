@@ -1,0 +1,11 @@
+[
+  {
+    "ArchStdEvent": "riscv_cycles"
+  },
+  {
+    "ArchStdEvent": "riscv_time"
+  },
+  {
+    "ArchStdEvent": "riscv_instret"
+  }
+]
