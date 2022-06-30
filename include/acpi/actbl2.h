@@ -2669,19 +2669,52 @@ struct acpi_table_tdel {
 
 struct acpi_table_rhct {
 	struct acpi_table_header header;	/* Common ACPI table header */
-	u32 flags;
+	u32 reserved;
 	u64 timebase_freq;
+	u32 node_count;
+	u32 node_offset;
 };
 
-struct acpi_rhct_hart_info {
+/*
+ * RHCT subtables
+ */
+struct acpi_rhct_node {
+	u16 type;
 	u16 length;
-	u16 version;
-	u32 acpi_proc_id;
+	u16 revision;
+	char node_data[1];
+};
+
+/* Values for RHCT subtable Type above */
+
+enum acpi_rhct_node_type {
+	ACPI_RHCT_NODE_ISA_STRING = 0x00,
+	ACPI_RHCT_NODE_CBO = 0x01,
+	ACPI_RHCT_NODE_HART_INFO = 0xFF,
+};
+
+/*
+ * RHCT node specific subtables
+ */
+
+/* ISA string node structure */
+struct acpi_rhct_isa_string {
+	u16  isa_length;
+	char isa[];		/* ISA string */
+};
+
+/* CBO node structure */
+struct acpi_rhct_cbo {
 	u16 cbom_block_size;
 	u16 cbop_block_size;
 	u16 cboz_block_size;
-	u16 isa_offset;
-	char isa[];
+};
+
+/* Hart Info node structure */
+struct acpi_rhct_hart_info {
+	u16 num_offsets;
+	u32 acpi_proc_id;
+	u32 node_offset[];
 };
 
 /* Reset to default packing */
