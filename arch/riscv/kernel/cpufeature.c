@@ -332,37 +332,6 @@ void __init_or_module riscv_cpufeature_patch_func(struct alt_entry *begin,
 #endif
 
 #ifdef CONFIG_ACPI
-static int acpi_get_riscv_isa(struct acpi_table_header *table_hdr,
-				unsigned int cpu,
-				char *isa)
-{
-	struct acpi_rhct_hart_info *entry;
-	unsigned long table_end = (unsigned long)table_hdr + table_hdr->length;
-	u32 acpi_cpu_id = get_acpi_id_for_cpu(cpu);
-	char *local_isa;
-
-	entry = ACPI_ADD_PTR(struct acpi_rhct_hart_info, table_hdr,
-			     sizeof(struct acpi_table_rhct));
-	while ((unsigned long)entry + entry->length <= table_end) {
-
-		if (entry->length == 0) {
-			pr_warn("Invalid zero length subtable\n");
-			break;
-		}
-		if (acpi_cpu_id == entry->acpi_proc_id) {
-			if (!entry->isa_offset) {
-				pr_warn("Invalid offset to ISA\n");
-				break;
-			}
-			local_isa = (char *) ((unsigned long) entry + entry->isa_offset);
-			strcpy(isa, local_isa);
-			return 0;
-		}
-		entry = ACPI_ADD_PTR(struct acpi_rhct_hart_info, entry,
-				     entry->length);
-	}
-	return -1;
-}
 
 void riscv_acpi_fill_hwcap(void)
 {
@@ -371,8 +340,6 @@ void riscv_acpi_fill_hwcap(void)
 	int i, j, ret;
 	static unsigned long isa2hwcap[256] = {0};
 	unsigned int cpu;
-	struct acpi_table_header *table;
-	acpi_status status;
 
 	isa2hwcap['i'] = isa2hwcap['I'] = COMPAT_HWCAP_ISA_I;
 	isa2hwcap['m'] = isa2hwcap['M'] = COMPAT_HWCAP_ISA_M;
@@ -386,12 +353,6 @@ void riscv_acpi_fill_hwcap(void)
 
 	bitmap_zero(riscv_isa, RISCV_ISA_EXT_MAX);
 
-	status = acpi_get_table(ACPI_SIG_RHCT, 0, &table);
-	if (ACPI_FAILURE(status)) {
-		pr_warn_once("No RHCT table found, CPU capabilities may be inaccurate\n");
-		return;
-	}
-
 	for_each_possible_cpu(cpu) {
 		unsigned long this_hwcap = 0;
 		DECLARE_BITMAP(this_isa, RISCV_ISA_EXT_MAX);
@@ -399,7 +360,7 @@ void riscv_acpi_fill_hwcap(void)
 		char hart_isa[256];
 
 		isa = hart_isa;
-		ret = acpi_get_riscv_isa(table, cpu, hart_isa);
+		ret = acpi_get_riscv_isa(cpu, hart_isa);
 		if (ret < 0) {
 			pr_warn("Unable to get ISA for the hart - %d\n",
 					cpu);
@@ -528,8 +489,6 @@ void riscv_acpi_fill_hwcap(void)
 			bitmap_and(riscv_isa, riscv_isa, this_isa, RISCV_ISA_EXT_MAX);
 
 	}
-
-	acpi_put_table(table);
 
 	/* We don't support systems with F but without D, so mask those out
 	 * here.
