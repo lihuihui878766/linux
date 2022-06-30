@@ -72,6 +72,8 @@ static inline u32 get_acpi_id_for_cpu(int cpu)
 #define ACPI_TABLE_FADT_MAJOR_REVISION 5
 #define ACPI_TABLE_FADT_MINOR_REVISION 1
 
+int acpi_get_riscv_isa(unsigned int cpu, char *isa);
+
 #endif
 
 #endif /*_ASM_ACPI_H*/
