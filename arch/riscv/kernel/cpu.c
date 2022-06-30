@@ -227,34 +227,12 @@ static void c_stop(struct seq_file *m, void *v)
 
 #ifdef CONFIG_ACPI
 void acpi_print_hart_info(struct seq_file *m,
-			  struct acpi_table_header *table_hdr,
 			  unsigned long cpu)
 {
-	struct acpi_rhct_hart_info *entry;
-	unsigned long table_end = (unsigned long)table_hdr + table_hdr->length;
-	u32 acpi_cpu_id = get_acpi_id_for_cpu(cpu);
-	char *isa;
+	char isa[256];
 
-	entry = ACPI_ADD_PTR(struct acpi_rhct_hart_info, table_hdr,
-			     sizeof(struct acpi_table_rhct));
-	while ((unsigned long)entry + entry->length <= table_end) {
-
-		if (entry->length == 0) {
-			pr_warn("Invalid zero length subtable\n");
-			break;
-		}
-		if (acpi_cpu_id == entry->acpi_proc_id) {
-			if (!entry->isa_offset) {
-				pr_warn("Invalid offset to ISA\n");
-				break;
-			}
-			isa = (char *) ((unsigned long) entry + entry->isa_offset);
-			print_isa(m, isa);
-			return;
-		}
-		entry = ACPI_ADD_PTR(struct acpi_rhct_hart_info, entry,
-				entry->length);
-	}
+	if(!acpi_get_riscv_isa(cpu, isa))
+		print_isa(m, isa);
 
 }
 #endif
@@ -280,16 +258,7 @@ static int c_show(struct seq_file *m, void *v)
 	}
 #ifdef CONFIG_ACPI
 	else {
-		struct acpi_table_header *table;
-		acpi_status status;
-
-		status = acpi_get_table(ACPI_SIG_RHCT, 0, &table);
-		if (ACPI_FAILURE(status)) {
-			pr_warn_once("No RHCT table found, CPU capabilities may be inaccurate\n");
-			return -1;
-		}
-		acpi_print_hart_info(m, table, cpu_id);
-		acpi_put_table(table);
+		acpi_print_hart_info(m, cpu_id);
 	}
 #endif
 
