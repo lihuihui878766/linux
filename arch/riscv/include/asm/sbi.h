@@ -28,6 +28,7 @@ enum sbi_ext_id {
 	SBI_EXT_IPI = 0x735049,
 	SBI_EXT_RFENCE = 0x52464E43,
 	SBI_EXT_HSM = 0x48534D,
+	SBI_EXT_PSM = 0x50534D,
 	SBI_EXT_SRST = 0x53525354,
 	SBI_EXT_PMU = 0x504D55,
 	SBI_EXT_DBCN = 0x4442434E,
@@ -341,6 +342,9 @@ enum sbi_ext_nacl_fid {
 #define SBI_ERR_ALREADY_AVAILABLE -6
 #define SBI_ERR_ALREADY_STARTED -7
 #define SBI_ERR_ALREADY_STOPPED -8
+
+#define SBI_PSM_CPC_READ_FFH		0x0
+#define SBI_PSM_CPC_WRITE_FFH		0x1
 
 extern unsigned long sbi_spec_version;
 struct sbiret {
