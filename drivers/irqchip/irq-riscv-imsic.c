@@ -1144,3 +1144,170 @@ static int __init imsic_dt_init(struct device_node *node,
 	return imsic_init(&ops, &node->fwnode, NULL);
 }
 IRQCHIP_DECLARE(riscv_imsic, "riscv,imsics", imsic_dt_init);
+
+#ifdef CONFIG_ACPI
+struct fwnode_handle *imsic_fwnode;
+
+struct imsic_rintc {
+	unsigned long hartid;
+	u64 base;
+	u32 size;
+};
+
+static struct {
+	u32 nr_rintc;
+	struct imsic_rintc *rintc;
+} imsic_acpi_data __initdata;
+
+static int __init
+imsic_acpi_parse_madt_rintc(union acpi_subtable_headers *header,
+			    const unsigned long end)
+{
+	static int count;
+	struct acpi_madt_rintc *rintc = (struct acpi_madt_rintc *)header;
+
+	imsic_acpi_data.rintc[count].base = rintc->imsic_addr;
+	imsic_acpi_data.rintc[count].size = rintc->imsic_size;
+	imsic_acpi_data.rintc[count].hartid = rintc->hart_id;
+
+	count++;
+	return 0;
+}
+
+static int __init imsic_acpi_collect_imsic_info(void)
+{
+	/* Collect individual IMSIC information */
+	if (acpi_table_parse_madt(ACPI_MADT_TYPE_RINTC,
+				  imsic_acpi_parse_madt_rintc, 0) > 0)
+		return 0;
+
+	pr_info("No valid RINTC entries exist\n");
+	return -ENODEV;
+}
+
+static int __init imsic_acpi_match_imsic(union acpi_subtable_headers *header,
+					 const unsigned long end)
+{
+	return 0;
+}
+
+static bool __init acpi_validate_rintc(struct acpi_subtable_header *header,
+				       struct acpi_probe_entry *ape)
+{
+	int count;
+
+	count = acpi_table_parse_madt(ACPI_MADT_TYPE_RINTC,
+				      imsic_acpi_match_imsic, 0);
+	if (count <= 0)
+		return false;
+
+	imsic_acpi_data.nr_rintc = count;
+	return true;
+}
+
+static struct fwnode_handle *riscv_get_imsic_fwnode(struct device *dev)
+{
+	return imsic_fwnode;
+}
+
+static int __init imsic_acpi_parent_hartid(struct fwnode_handle *fwnode,
+					 void *fwopaque, u32 index,
+					 unsigned long *out_hartid)
+{
+	if (index >= imsic_acpi_data.nr_rintc)
+		return -EINVAL;
+	*out_hartid = imsic_acpi_data.rintc[index].hartid;
+	return 0;
+}
+
+static int __init imsic_acpi_mmio_to_resource(struct fwnode_handle *fwnode,
+					      void *fwopaque, u32 index,
+					      struct resource *res)
+{
+	if (index >= imsic_acpi_data.nr_rintc)
+		return -EINVAL;
+	if (!res)
+		return -ENOMEM;
+
+	res->start = imsic_acpi_data.rintc[index].base;
+	res->end = imsic_acpi_data.rintc[index].base +
+		   imsic_acpi_data.rintc[index].size - 1;
+	res->flags = IORESOURCE_MEM;
+
+	return 0;
+}
+
+static int __init imsic_acpi_read_u32(struct fwnode_handle *fwnode,
+				      void *fwopaque, const char *prop,
+				      u32 *out_val)
+{
+	struct acpi_madt_imsic *imsic = (struct acpi_madt_imsic *)fwopaque;
+
+	if (!strcmp(prop, "riscv,guest-index-bits"))
+		*out_val = imsic->guest_index_bits;
+	else if (!strcmp(prop, "riscv,hart-index-bits"))
+		*out_val = imsic->hart_index_bits;
+	else if (!strcmp(prop, "riscv,group-index-bits"))
+		*out_val = imsic->group_index_bits;
+	else if (!strcmp(prop, "riscv,group-index-shift"))
+		*out_val = imsic->group_index_shift;
+	else if (!strcmp(prop, "riscv,num-ids"))
+		*out_val = imsic->num_ids;
+	else if (!strcmp(prop, "riscv,num-guest-ids"))
+		*out_val = imsic->num_guest_ids;
+	else
+		return -EINVAL;
+
+	return 0;
+}
+
+static int __init imsic_acpi_init(union acpi_subtable_headers *header,
+				  const unsigned long end)
+{
+	int rc;
+	size_t size;
+	struct imsic_fwnode_ops ops = {
+		.parent_hartid = imsic_acpi_parent_hartid,
+		.mmio_to_resource = imsic_acpi_mmio_to_resource,
+		.read_u32 = imsic_acpi_read_u32,
+	};
+
+	if (!imsic_acpi_data.nr_rintc)
+		return -ENODEV;
+
+	size = sizeof(*imsic_acpi_data.rintc) * imsic_acpi_data.nr_rintc;
+	imsic_acpi_data.rintc = kzalloc(size, GFP_KERNEL);
+	if (!imsic_acpi_data.rintc)
+		return -ENOMEM;
+
+	rc = imsic_acpi_collect_imsic_info();
+	if(rc) {
+		kfree(imsic_acpi_data.rintc);
+		return rc;
+	}
+
+	imsic_fwnode = irq_domain_alloc_named_fwnode("RISCV-IMSIC");
+	if (!imsic_fwnode) {
+		rc = -ENOMEM;
+		kfree(imsic_acpi_data.rintc);
+		return -rc;
+	}
+
+	rc = imsic_init(&ops, imsic_fwnode, header);
+	if (rc) {
+		kfree(imsic_acpi_data.rintc);
+		irq_domain_free_fwnode(imsic_fwnode);
+		imsic_fwnode = NULL;
+		return -rc;
+	}
+
+	platform_msi_register_fwnode_provider(&riscv_get_imsic_fwnode);
+
+	pci_msi_register_fwnode_provider(&riscv_get_imsic_fwnode);
+
+	return 0;
+}
+
+IRQCHIP_ACPI_DECLARE(riscv_imsic, ACPI_MADT_TYPE_IMSIC,
+		     acpi_validate_rintc, 1, imsic_acpi_init);
+#endif
