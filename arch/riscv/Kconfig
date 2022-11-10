@@ -697,6 +697,7 @@ endmenu # "Power management options"
 menu "CPU Power Management"
 
 source "drivers/cpuidle/Kconfig"
+source "drivers/cpufreq/Kconfig"
 
 endmenu # "CPU Power Management"
 
