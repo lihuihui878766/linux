@@ -267,7 +267,7 @@ static int __init aplic_parse_madt(union acpi_subtable_headers *header,
 
 	plat_data.nr_idcs = aplic_entry->num_idcs;
 	plat_data.gsi_base = aplic_entry->gsi_base;
-	plat_data.nr_irqs = aplic_entry->num_irqs;
+	plat_data.nr_irqs = aplic_entry->num_sources;
 	plat_data.aplic_id = aplic_entry->id;
 	ret = platform_device_add_data(pdev, &plat_data, sizeof(plat_data));
 

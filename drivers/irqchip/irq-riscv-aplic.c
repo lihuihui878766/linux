@@ -4,6 +4,7 @@
  * Copyright (C) 2022 Ventana Micro Systems Inc.
  */
 
+#include <linux/acpi.h>
 #include <linux/bitops.h>
 #include <linux/cpu.h>
 #include <linux/interrupt.h>
@@ -21,6 +22,7 @@
 #include <linux/of_irq.h>
 #include <linux/platform_device.h>
 #include <linux/smp.h>
+#include <asm/acpi.h>
 
 #define APLIC_DEFAULT_PRIORITY		1
 #define APLIC_DISABLE_IDELIVERY		0
@@ -50,6 +52,8 @@ struct aplic_priv {
 	struct irq_domain	*irqdomain;
 	struct aplic_msicfg	msicfg;
 	struct cpumask		lmask;
+	u32			aplic_id;
+	u32			gsi_base;
 };
 
 struct aplic_fwnode_ops {
@@ -198,22 +202,45 @@ static struct irq_chip aplic_chip = {
 			  IRQCHIP_MASK_ON_SUSPEND,
 };
 
-static int aplic_irqdomain_translate(struct irq_domain *d,
-				     struct irq_fwspec *fwspec,
-				     unsigned long *hwirq,
-				     unsigned int *type)
+static int aplic_irqdomain_common_translate(struct aplic_priv *priv,
+					    struct irq_fwspec *fwspec,
+					    unsigned long *hwirq,
+					    unsigned int *type)
 {
 	if (WARN_ON(fwspec->param_count < 2))
 		return -EINVAL;
 	if (WARN_ON(!fwspec->param[0]))
 		return -EINVAL;
 
-	*hwirq = fwspec->param[0];
+	/*
+	 * gsi_base will be always 0 in case of DT.
+	 */
+	*hwirq = fwspec->param[0] - priv->gsi_base;
 	*type = fwspec->param[1] & IRQ_TYPE_SENSE_MASK;
 
 	WARN_ON(*type == IRQ_TYPE_NONE);
 
 	return 0;
+}
+
+static int aplic_irqdomain_msi_translate(struct irq_domain *d,
+					 struct irq_fwspec *fwspec,
+					 unsigned long *hwirq,
+					 unsigned int *type)
+{
+	struct aplic_priv *priv = platform_msi_get_host_data(d);
+
+	return aplic_irqdomain_common_translate(priv, fwspec, hwirq, type);
+}
+
+static int aplic_irqdomain_idc_translate(struct irq_domain *d,
+					 struct irq_fwspec *fwspec,
+					 unsigned long *hwirq,
+					 unsigned int *type)
+{
+	struct aplic_priv *priv = d->host_data;
+
+	return aplic_irqdomain_common_translate(priv, fwspec, hwirq, type);
 }
 
 static int aplic_irqdomain_msi_alloc(struct irq_domain *domain,
@@ -226,7 +253,7 @@ static int aplic_irqdomain_msi_alloc(struct irq_domain *domain,
 	struct irq_fwspec *fwspec = arg;
 	struct aplic_priv *priv = platform_msi_get_host_data(domain);
 
-	ret = aplic_irqdomain_translate(domain, fwspec, &hwirq, &type);
+	ret = aplic_irqdomain_msi_translate(domain, fwspec, &hwirq, &type);
 	if (ret)
 		return ret;
 
@@ -253,7 +280,7 @@ static int aplic_irqdomain_msi_alloc(struct irq_domain *domain,
 }
 
 static const struct irq_domain_ops aplic_irqdomain_msi_ops = {
-	.translate	= aplic_irqdomain_translate,
+	.translate	= aplic_irqdomain_msi_translate,
 	.alloc		= aplic_irqdomain_msi_alloc,
 	.free		= platform_msi_device_domain_free,
 };
@@ -268,7 +295,7 @@ static int aplic_irqdomain_idc_alloc(struct irq_domain *domain,
 	struct irq_fwspec *fwspec = arg;
 	struct aplic_priv *priv = domain->host_data;
 
-	ret = aplic_irqdomain_translate(domain, fwspec, &hwirq, &type);
+	ret = aplic_irqdomain_idc_translate(domain, fwspec, &hwirq, &type);
 	if (ret)
 		return ret;
 
@@ -285,7 +312,7 @@ static int aplic_irqdomain_idc_alloc(struct irq_domain *domain,
 }
 
 static const struct irq_domain_ops aplic_irqdomain_idc_ops = {
-	.translate	= aplic_irqdomain_translate,
+	.translate	= aplic_irqdomain_idc_translate,
 	.alloc		= aplic_irqdomain_idc_alloc,
 	.free		= irq_domain_free_irqs_top,
 };
@@ -603,6 +630,80 @@ static int aplic_setup_idc(struct aplic_priv *priv,
 	return (setup_count) ? 0 : -ENODEV;
 }
 
+#ifdef CONFIG_ACPI
+static struct aplic_priv *cached_aplic_priv[MAX_APLICS];
+static u8 nr_aplics;
+
+static u32 aplic_gsi_to_irq(u32 gsi)
+{
+	return acpi_register_gsi(NULL, gsi, ACPI_LEVEL_SENSITIVE, ACPI_ACTIVE_HIGH);
+}
+
+static struct fwnode_handle *aplic_get_gsi_domain_id(u32 gsi)
+{
+        int i;
+
+        /* Find the APLIC that manages this GSI. */
+        for (i = 0; i < nr_aplics; i++) {
+                struct aplic_priv *priv = cached_aplic_priv[i];
+
+                if (!priv)
+                        return NULL;
+
+                if (gsi >= priv->gsi_base && gsi < (priv->gsi_base + priv->nr_irqs))
+                        return priv->fwnode;
+        }
+
+        pr_err("ERROR: Unable to locate APLIC for GSI %d\n", gsi);
+	return NULL;
+}
+
+static int aplic_acpi_parent_hartid(struct fwnode_handle *fwnode,
+				    void *fwopaque, u32 index,
+				    unsigned long *out_hartid)
+{
+	struct platform_device *pdev = (struct platform_device *)fwopaque;
+	struct aplic_plat_data *plat_data = (struct aplic_plat_data *)dev_get_platdata(&pdev->dev);
+
+	return acpi_get_ext_intc_parent_info(plat_data->aplic_id, index, out_hartid, NULL);
+}
+
+static void __iomem *aplic_acpi_mmio_map(struct fwnode_handle *fwnode,
+					 void *fwopaque, u32 index)
+{
+	struct resource *regs;
+	struct platform_device *pdev = (struct platform_device *)fwopaque;
+
+	regs = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (regs)
+		return ioremap(regs->start, resource_size(regs));
+
+	return NULL;
+}
+
+static int aplic_acpi_read_nr_sources(struct fwnode_handle *fwnode,
+				      void *fwopaque, u32 *out_val)
+{
+	struct platform_device *pdev = (struct platform_device *)fwopaque;
+	struct aplic_plat_data *plat_data = (struct aplic_plat_data *)dev_get_platdata(&pdev->dev);
+
+	*out_val = plat_data->nr_irqs;
+
+	return 0;
+}
+
+static int aplic_acpi_read_nr_idcs(struct fwnode_handle *fwnode,
+				   void *fwopaque, u32 *out_val)
+{
+	struct platform_device *pdev = (struct platform_device *)fwopaque;
+	struct aplic_plat_data *plat_data = (struct aplic_plat_data *)dev_get_platdata(&pdev->dev);
+
+	*out_val = plat_data->nr_idcs;
+
+	return 0;
+}
+#endif
+
 static int aplic_common_probe(struct aplic_fwnode_ops *fwops,
 			      struct fwnode_handle *fwnode,
 			      void *fwopaque,
@@ -684,6 +785,17 @@ static int aplic_common_probe(struct aplic_fwnode_ops *fwops,
 		return -ENOMEM;
 	}
 
+#ifdef CONFIG_ACPI
+	if (!acpi_disabled) {
+		struct aplic_plat_data *plat_data = (struct aplic_plat_data *)dev_get_platdata(dev);
+		priv->gsi_base = plat_data->gsi_base;
+		priv->aplic_id = plat_data->aplic_id;
+		acpi_set_irq_model(ACPI_IRQ_MODEL_APLIC, aplic_get_gsi_domain_id);
+		acpi_set_gsi_to_irq_fallback(aplic_gsi_to_irq);
+		cached_aplic_priv[nr_aplics++] = priv;
+	}
+#endif
+
 	/* Advertise the interrupt controller */
 	if (priv->nr_idcs) {
 		pr_info("%pfwP: %d interrupts directly connected to %d CPUs\n",
@@ -748,18 +860,45 @@ static int aplic_dt_read_nr_idcs(struct fwnode_handle *fwnode,
 	return 0;
 }
 
-static int aplic_probe(struct platform_device *pdev)
+#ifdef CONFIG_ACPI
+static int aplic_acpi_probe(struct platform_device *pdev)
 {
-	struct device_node *node = pdev->dev.of_node;
-	struct fwnode_handle *fwnode = of_node_to_fwnode(node);
+	struct fwnode_handle *fwnode = dev_fwnode(&pdev->dev);
+
 	struct aplic_fwnode_ops ops = {
-		.parent_hartid = aplic_dt_parent_hartid,
-		.mmio_map = aplic_dt_mmio_map,
-		.read_nr_sources = aplic_dt_read_nr_sources,
-		.read_nr_idcs = aplic_dt_read_nr_idcs,
+		.parent_hartid = aplic_acpi_parent_hartid,
+		.mmio_map = aplic_acpi_mmio_map,
+		.read_nr_sources = aplic_acpi_read_nr_sources,
+		.read_nr_idcs = aplic_acpi_read_nr_idcs,
 	};
 
-	return aplic_common_probe(&ops, fwnode, NULL, &pdev->dev);
+	return aplic_common_probe(&ops, fwnode, pdev, &pdev->dev);
+}
+#else
+static int aplic_acpi_probe(struct platform_device *pdev)
+{
+	return -ENODEV;
+}
+#endif
+
+static int aplic_probe(struct platform_device *pdev)
+{
+	struct device *dev = &pdev->dev;
+	struct fwnode_handle *fwnode = dev_fwnode(dev);
+
+	if (dev->of_node) {
+		struct aplic_fwnode_ops ops = {
+			.parent_hartid = aplic_dt_parent_hartid,
+			.mmio_map = aplic_dt_mmio_map,
+			.read_nr_sources = aplic_dt_read_nr_sources,
+			.read_nr_idcs = aplic_dt_read_nr_idcs,
+		};
+
+		return aplic_common_probe(&ops, fwnode, NULL, &pdev->dev);
+
+	} else {
+		return aplic_acpi_probe(pdev);
+	}
 }
 
 static const struct of_device_id aplic_match[] = {
