@@ -665,7 +665,7 @@ static int aplic_acpi_parent_hartid(struct fwnode_handle *fwnode,
 	struct platform_device *pdev = (struct platform_device *)fwopaque;
 	struct aplic_plat_data *plat_data = (struct aplic_plat_data *)dev_get_platdata(&pdev->dev);
 
-	return acpi_get_ext_intc_parent_info(plat_data->aplic_id, index, out_hartid, NULL);
+	return acpi_get_ext_intc_parent_info(plat_data->aplic_id, index, true, out_hartid, NULL);
 }
 
 static void __iomem *aplic_acpi_mmio_map(struct fwnode_handle *fwnode,
