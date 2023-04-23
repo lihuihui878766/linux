@@ -1628,3 +1628,181 @@ bool is_acpi_data_node(const struct fwnode_handle *fwnode)
 	return !IS_ERR_OR_NULL(fwnode) && fwnode->ops == &acpi_data_fwnode_ops;
 }
 EXPORT_SYMBOL(is_acpi_data_node);
+/* -------------------------------------------------------------------------- */
+/* acpi_irqchip_fwid property_entry processing */
+
+static const struct property_entry *acpi_property_entry_get(const struct property_entry *prop,
+							    const char *name)
+{
+	if (!prop)
+		return NULL;
+
+	for (; prop->name; prop++)
+		if (!strcmp(name, prop->name))
+			return prop;
+
+	return NULL;
+}
+
+static const void *acpi_property_get_pointer(const struct property_entry *prop)
+{
+	if (!prop->length)
+		return NULL;
+
+	return prop->is_inline ? &prop->value : prop->pointer;
+}
+
+static const void *acpi_property_entry_find(const struct property_entry *props,
+					    const char *propname, size_t length)
+{
+	const struct property_entry *prop;
+	const void *pointer;
+
+	prop = acpi_property_entry_get(props, propname);
+	if (!prop)
+		return ERR_PTR(-EINVAL);
+	pointer = acpi_property_get_pointer(prop);
+	if (!pointer)
+		return ERR_PTR(-ENODATA);
+	if (length > prop->length)
+		return ERR_PTR(-EOVERFLOW);
+	return pointer;
+}
+
+static int acpi_property_entry_count_elems_of_size(const struct property_entry *props,
+						   const char *propname, size_t length)
+{
+	const struct property_entry *prop;
+
+	prop = acpi_property_entry_get(props, propname);
+	if (!prop)
+		return -EINVAL;
+
+	return prop->length / length;
+}
+
+static int acpi_property_entry_read_int_array(const struct property_entry *props,
+					 const char *name,
+					 unsigned int elem_size, void *val,
+					 size_t nval)
+{
+	const void *pointer;
+	size_t length;
+
+	if (!val)
+		return acpi_property_entry_count_elems_of_size(props, name,
+							       elem_size);
+
+	if (!is_power_of_2(elem_size) || elem_size > sizeof(u64))
+		return -ENXIO;
+
+	length = nval * elem_size;
+
+	pointer = acpi_property_entry_find(props, name, length);
+	if (IS_ERR(pointer))
+		return PTR_ERR(pointer);
+
+	memcpy(val, pointer, length);
+	return 0;
+}
+
+static bool acpi_irqchip_fwnode_property_present(const struct fwnode_handle *fwnode,
+						 const char *propname)
+{
+	struct acpi_irqchip_fwid *fwid = container_of(fwnode, struct acpi_irqchip_fwid, fwnode);
+
+	return !!acpi_property_entry_get(fwid->properties, propname);
+}
+
+static int acpi_irqchip_fwnode_read_int_array(const struct fwnode_handle *fwnode,
+					      const char *propname,
+					      unsigned int elem_size, void *val,
+					      size_t nval)
+{
+	struct acpi_irqchip_fwid *fwid = container_of(fwnode, struct acpi_irqchip_fwid, fwnode);
+
+	return acpi_property_entry_read_int_array(fwid->properties, propname,
+					     elem_size, val, nval);
+}
+
+static const char *acpi_irqchip_fwnode_get_name(const struct fwnode_handle *fwnode)
+{
+	struct acpi_irqchip_fwid *fwid = container_of(fwnode, struct acpi_irqchip_fwid, fwnode);
+
+	return fwid->name;
+}
+
+static int acpi_irqchip_fwnode_get_reference_args(const struct fwnode_handle *fwnode,
+						  const char *propname, const char *nargs_prop,
+						  unsigned int nargs, unsigned int index,
+						  struct fwnode_reference_args *args)
+{
+	struct acpi_irqchip_fwid *fwid = container_of(fwnode, struct acpi_irqchip_fwid, fwnode);
+	const struct acpi_irqchip_fwid_ref_args *ref_array;
+	const struct acpi_irqchip_fwid_ref_args *ref;
+	const struct property_entry *prop;
+	struct fwnode_handle *refnode;
+	u32 nargs_prop_val;
+	int error;
+	int i;
+
+	prop = acpi_property_entry_get(fwid->properties, propname);
+	if (!prop) {
+		return -ENOENT;
+	}
+
+	if (prop->type != DEV_PROP_REF)
+		return -EINVAL;
+
+	/*
+	 * We expect that references are never stored inline, even
+	 * single ones, as they are too big.
+	 */
+	if (prop->is_inline)
+		return -EINVAL;
+
+	if (index * sizeof(*ref) >= prop->length)
+		return -ENOENT;
+
+	ref_array = prop->pointer;
+	ref = &ref_array[index];
+
+	refnode = &(ref->node->fwnode);
+	if (!refnode)
+		return -ENOENT;
+
+	if (nargs_prop) {
+		error = acpi_property_entry_read_int_array(ref->node->properties,
+						      nargs_prop, sizeof(u32),
+						      &nargs_prop_val, 1);
+		if (error) {
+			return error;
+		}
+
+		nargs = nargs_prop_val;
+	}
+
+	if (nargs > NR_FWNODE_REFERENCE_ARGS)
+		return -EINVAL;
+
+	args->fwnode = refnode;
+	args->nargs = nargs;
+
+	for (i = 0; i < nargs; i++)
+		args->args[i] = ref->args[i];
+
+	return 0;
+}
+
+const struct fwnode_operations acpi_irqchip_fwnode_ops = {
+	.property_present = acpi_irqchip_fwnode_property_present,
+	.property_read_int_array = acpi_irqchip_fwnode_read_int_array,
+	.get_name = acpi_irqchip_fwnode_get_name,
+	.get_reference_args = acpi_irqchip_fwnode_get_reference_args,
+};
+EXPORT_SYMBOL_GPL(acpi_irqchip_fwnode_ops);
+
+bool is_acpi_irqchip_fwid(struct fwnode_handle *fwnode)
+{
+        return fwnode && fwnode->ops == &acpi_irqchip_fwnode_ops;
+}

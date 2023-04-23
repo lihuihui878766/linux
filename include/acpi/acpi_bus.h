@@ -800,6 +800,45 @@ static inline void acpi_put_acpi_dev(struct acpi_device *adev)
 {
 	acpi_dev_put(adev);
 }
+
+struct acpi_irqchip_fwid {
+	char				*name;
+	struct fwnode_handle		fwnode;
+	const struct property_entry	*properties;
+};
+
+/**
+ * struct acpi_irqchip_fwid_ref_args - Reference property with additional arguments
+ * @node: Reference to a acpi_irqchip_fwid node
+ * @nargs: Number of elements in @args array
+ * @args: Integer arguments
+ */
+struct acpi_irqchip_fwid_ref_args {
+        struct acpi_irqchip_fwid *node;
+        unsigned int nargs;
+        u64 args[NR_FWNODE_REFERENCE_ARGS];
+};
+
+#define ACPI_IRQCHIP_FWNODE_REFERENCE(_ref_, ...)                     \
+(const struct acpi_irqchip_fwid_ref_args) {                         \
+        .node = _ref_,                                          \
+        .nargs = ARRAY_SIZE(((u64[]){ 0, ##__VA_ARGS__ })) - 1, \
+        .args = { __VA_ARGS__ },                                \
+}
+
+extern const struct fwnode_operations acpi_irqchip_fwnode_ops;
+bool is_acpi_irqchip_fwid(struct fwnode_handle *fwnode);
+
+#define to_acpi_irqchip_fwid(__fwnode)							\
+        ({										\
+                typeof(__fwnode) __to_acpi_irqchip_fwid_fwnode = __fwnode;		\
+											\
+                is_acpi_irqchip_fwid(__to_acpi_irqchip_fwid_fwnode) ?			\
+                        container_of(__to_acpi_irqchip_fwid_fwnode,			\
+                                     struct acpi_irqchip_fwid, fwnode) :		\
+                        NULL;								\
+        })
+
 #else	/* CONFIG_ACPI */
 
 static inline int register_acpi_bus_type(void *bus) { return 0; }
