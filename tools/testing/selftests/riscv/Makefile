@@ -16,7 +16,7 @@ CFLAGS := -Wall -O2 -g
 top_srcdir = $(realpath ../../../../)
 
 # Additional include paths needed by kselftest.h and local headers
-CFLAGS += -I$(top_srcdir)/tools/testing/selftests/
+CFLAGS += -I$(top_srcdir)/tools/testing/selftests/ -I$(top_srcdir)/tools/include
 
 CFLAGS += $(KHDR_INCLUDES)
 
