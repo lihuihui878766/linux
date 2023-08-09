@@ -472,6 +472,12 @@ unsigned long riscv_get_elf_hwcap(void)
 	return hwcap;
 }
 
+void riscv_user_isa_enable(void)
+{
+	if (riscv_this_cpu_has_extension_unlikely(RISCV_ISA_EXT_ZICBOZ))
+		csr_set(CSR_SENVCFG, ENVCFG_CBZE);
+}
+
 #ifdef CONFIG_RISCV_ALTERNATIVE
 /*
  * Alternative patch sites consider 48 bits when determining when to patch
