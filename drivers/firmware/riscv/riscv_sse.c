@@ -6,6 +6,8 @@
 #define pr_fmt(fmt) "sse: " fmt
 
 #include <linux/cpu.h>
+#include <acpi/ghes.h>
+#include <linux/acpi.h>
 #include <linux/cpuhotplug.h>
 #include <linux/hardirq.h>
 #include <linux/list.h>
@@ -650,3 +652,248 @@ remove_reboot:
 
 }
 core_initcall(sse_init);
+
+#define SSE_GHES_LIST_OF_CALLBACKS
+
+struct sse_ghes_callback {
+#ifdef SSE_GHES_LIST_OF_CALLBACKS
+	struct list_head head;
+#endif
+	struct ghes *ghes;
+	sse_event_handler *callback;
+};
+
+struct sse_ghes_event_data {
+	struct list_head head;
+	u32 event_num;
+#ifdef SSE_GHES_LIST_OF_CALLBACKS
+	struct list_head callback_list;
+#else
+	struct sse_ghes_callback *global_cb;
+	struct sse_ghes_callback __percpu *local_cb;
+#endif
+	struct sse_event *event;
+};
+
+static DEFINE_SPINLOCK(sse_ghes_event_list_lock);
+static LIST_HEAD(sse_ghes_event_list);
+
+static int sse_ghes_handler(u32 event_num, void *arg, struct pt_regs *regs)
+{
+	struct sse_ghes_event_data *ev_data = arg;
+	struct sse_ghes_callback *cb = NULL;
+	int err = 0;
+
+#ifdef SSE_GHES_LIST_OF_CALLBACKS
+	list_for_each_entry(cb, &ev_data->callback_list, head) {
+		if (cb && cb->ghes && cb->callback) {
+			err = cb->callback(ev_data->event_num, cb->ghes, regs);
+			break;
+		}
+	}
+#else
+	if (ev_data->event_num & SBI_SSE_EVENT_GLOBAL)
+		cb = ev_data->global_cb;
+	else
+		cb = this_cpu_ptr(ev_data->local_cb);
+	if (cb && cb->ghes && cb->callback)
+		err = cb->callback(ev_data->event_num, cb->ghes, regs);
+#endif
+
+	if (err) {
+		pr_err("%s: cpu%d: event 0x%x callback failed (error %d)\n",
+			__func__, smp_processor_id(), event_num, err);
+	}
+
+	return err;
+}
+
+int sse_register_ghes(struct ghes *ghes, sse_event_handler *lo_cb,
+		      sse_event_handler *hi_cb)
+{
+	struct sse_ghes_event_data *ev_data, *evd;
+	struct sse_ghes_callback *cb;
+	u32 ev_num;
+	int err;
+
+	if (!sse_available)
+		return -EOPNOTSUPP;
+	if (!ghes || !lo_cb || !hi_cb)
+		return -EINVAL;
+
+	ev_num = ghes->generic->notify.vector;
+
+	ev_data = NULL;
+	spin_lock(&sse_ghes_event_list_lock);
+	list_for_each_entry(evd, &sse_ghes_event_list, head) {
+		if (evd->event_num == ev_num) {
+			ev_data = evd;
+			break;
+		}
+	}
+	spin_unlock(&sse_ghes_event_list_lock);
+
+	if (!ev_data) {
+		ev_data = kzalloc(sizeof(*ev_data), GFP_KERNEL);
+		if (!ev_data)
+			return -ENOMEM;
+
+		INIT_LIST_HEAD(&ev_data->head);
+		ev_data->event_num = ev_num;
+
+#ifdef SSE_GHES_LIST_OF_CALLBACKS
+		INIT_LIST_HEAD(&ev_data->callback_list);
+#else
+		if (ev_num & SBI_SSE_EVENT_GLOBAL) {
+			ev_data->global_cb = kzalloc(sizeof(*cb), GFP_KERNEL);
+			if (!ev_data->global_cb) {
+				kfree(ev_data);
+				return -ENOMEM;
+			}
+		} else {
+			ev_data->local_cb = alloc_percpu(typeof(*cb));
+			if (!ev_data->local_cb) {
+				kfree(ev_data);
+				return -ENOMEM;
+			}
+		}
+#endif
+
+		ev_data->event = sse_event_register(ev_num, ev_num,
+						    sse_ghes_handler, ev_data);
+		if (!ev_data->event) {
+			pr_err("%s: Couldn't register event 0x%x\n", __func__, ev_num);
+#ifndef SSE_GHES_LIST_OF_CALLBACKS
+			if (ev_num & SBI_SSE_EVENT_GLOBAL)
+				kfree(ev_data->global_cb);
+			else
+				free_percpu(ev_data->local_cb);
+#endif
+			kfree(ev_data);
+			return -ENOMEM;
+		}
+
+		err = sse_event_enable(ev_data->event);
+		if (err) {
+			pr_err("%s: Couldn't enable event 0x%x\n", __func__, ev_num);
+			sse_event_unregister(ev_data->event);
+#ifndef SSE_GHES_LIST_OF_CALLBACKS
+			if (ev_num & SBI_SSE_EVENT_GLOBAL)
+				kfree(ev_data->global_cb);
+			else
+				free_percpu(ev_data->local_cb);
+#endif
+			kfree(ev_data);
+			return err;
+		}
+
+		spin_lock(&sse_ghes_event_list_lock);
+		list_add_tail(&ev_data->head, &sse_ghes_event_list);
+		spin_unlock(&sse_ghes_event_list_lock);
+	}
+
+#ifdef SSE_GHES_LIST_OF_CALLBACKS
+	list_for_each_entry(cb, &ev_data->callback_list, head) {
+		if (cb->ghes == ghes)
+			return -EALREADY;
+	}
+
+	cb = kzalloc(sizeof(*cb), GFP_KERNEL);
+	if (!cb)
+		return -ENOMEM;
+	INIT_LIST_HEAD(&cb->head);
+	cb->ghes = ghes;
+	cb->callback = lo_cb;
+	list_add_tail(&cb->head, &ev_data->callback_list);
+#else
+	/* TODO: Find target CPU for given GHES instance with local event */
+	if (ev_data->event_num & SBI_SSE_EVENT_GLOBAL)
+		cb = ev_data->global_cb;
+	else
+		cb = per_cpu_ptr(ev_data->local_cb, smp_processor_id());
+	if (cb->ghes)
+		return -EALREADY;
+
+	cb->ghes = ghes;
+	cb->callback = lo_cb;
+#endif
+
+	return 0;
+}
+
+int sse_unregister_ghes(struct ghes *ghes)
+{
+	struct sse_ghes_event_data *ev_data, *tmp;
+	struct sse_ghes_callback *cb;
+	int free_ev_data = 0;
+#ifndef SSE_GHES_LIST_OF_CALLBACKS
+	int cpu;
+#endif
+
+	if (!ghes)
+		return -EINVAL;
+
+	spin_lock(&sse_ghes_event_list_lock);
+
+	list_for_each_entry_safe(ev_data, tmp, &sse_ghes_event_list, head) {
+#ifdef SSE_GHES_LIST_OF_CALLBACKS
+		list_for_each_entry(cb, &ev_data->callback_list, head) {
+			if (cb->ghes != ghes)
+				continue;
+
+			list_del(&cb->head);
+			kfree(cb);
+			break;
+		}
+
+		if (list_empty(&ev_data->callback_list))
+			free_ev_data = 1;
+#else
+		if (ev_data->event_num & SBI_SSE_EVENT_GLOBAL) {
+			free_ev_data = 1;
+		} else {
+			for_each_cpu(cpu, cpu_present_mask) {
+				cb = per_cpu_ptr(ev_data->local_cb, cpu);
+				if (cb->ghes != ghes)
+					continue;
+
+				cb->ghes = NULL;
+				cb->callback = NULL;
+			}
+
+			free_ev_data = 1;
+			for_each_cpu(cpu, cpu_present_mask) {
+				cb = per_cpu_ptr(ev_data->local_cb, cpu);
+				if (cb->ghes) {
+					free_ev_data = 0;
+					break;
+				}
+			}
+		}
+#endif
+
+		if (free_ev_data) {
+			spin_unlock(&sse_ghes_event_list_lock);
+
+			sse_event_disable(ev_data->event);
+			sse_event_unregister(ev_data->event);
+			ev_data->event = NULL;
+
+			spin_lock(&sse_ghes_event_list_lock);
+
+#ifndef SSE_GHES_LIST_OF_CALLBACKS
+			if (ev_data->event_num & SBI_SSE_EVENT_GLOBAL)
+				kfree(ev_data->global_cb);
+			else
+				free_percpu(ev_data->local_cb);
+#endif
+
+			list_del(&ev_data->head);
+			kfree(ev_data);
+		}
+	}
+
+	spin_unlock(&sse_ghes_event_list_lock);
+
+	return 0;
+}
