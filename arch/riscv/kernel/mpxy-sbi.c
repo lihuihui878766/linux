@@ -14,10 +14,25 @@
 #include <linux/smp.h>
 #include <asm/sbi.h>
 
+/* Per hart mpxy context */
 struct sbi_mpxy {
+	/* Shared memory base address */
 	void *shmem;
+	/* Shared memory physical address */
 	phys_addr_t shmem_phys_addr;
 	bool active;
+};
+
+/* Channel IDs data shared memory layout */
+struct sbi_mpxy_channelids_data {
+	/* remaining number of channel ids */
+	u32 remaining;
+	/* returned channel ids in current
+	 function call */
+	u32 returned;
+	/* pointer to shared memory offset
+	storing channel ids */
+	u32 channel_array[];
 };
 
 DEFINE_PER_CPU(struct sbi_mpxy, sbi_mpxy);
@@ -101,6 +116,83 @@ static int __sbi_mpxy_setup_shmem(unsigned int cpu)
 	mpxy->active = true;
 
 	return 0;
+}
+
+int sbi_mpxy_get_num_channels(u32 *channels_count)
+{
+	struct sbiret sret;
+	u32 remaining, returned, start_index = 0;
+	struct sbi_mpxy *mpxy = this_cpu_ptr(&sbi_mpxy);
+	struct sbi_mpxy_channelids_data *sdata = mpxy->shmem;
+
+	if (!sbi_mpxy_available() || !mpxy->active)
+		return -ENODEV;
+
+	if (!channels_count)
+		return -EINVAL;
+
+	get_cpu();
+	/* get the remaining and returned fields to get the total */
+	sret = sbi_ecall(SBI_EXT_MPXY, SBI_EXT_MPXY_GET_CHANNEL_IDS,
+			 start_index, 0, 0, 0, 0, 0);
+
+	if (!sret.error) {
+		remaining = le32_to_cpu(sdata->remaining);
+		returned =  le32_to_cpu(sdata->returned);
+		*channels_count = remaining + returned;
+	}
+
+	put_cpu();
+
+	return sbi_err_map_linux_errno(sret.error);
+}
+
+int sbi_mpxy_get_channel_ids(u32 *cbuf, unsigned long cbufsize)
+{
+	int rc;
+	struct sbiret sret;
+	u32 count, remaining, returned, sidx, start_index = 0, cidx = 0;
+	struct sbi_mpxy *mpxy = this_cpu_ptr(&sbi_mpxy);
+	struct sbi_mpxy_channelids_data *sdata = mpxy->shmem;
+
+	if (!sbi_mpxy_available() || !mpxy->active)
+		return -ENODEV;
+
+	if (!cbuf)
+		return -EINVAL;
+
+	rc = sbi_mpxy_get_num_channels(&count);
+	if (rc)
+		return rc;
+
+	/* Is passed buffer size(bytes) sufficient to store all
+	 * available channel ids */
+	if (!count || cbufsize < (count * sizeof(u32)))
+		return -EINVAL;
+
+	get_cpu();
+
+	do {
+		sret = sbi_ecall(SBI_EXT_MPXY, SBI_EXT_MPXY_GET_CHANNEL_IDS,
+			start_index, 0, 0, 0, 0, 0);
+		if (sret.error)
+			goto done;
+
+		remaining = le32_to_cpu(sdata->remaining);
+		returned =  le32_to_cpu(sdata->returned);
+
+		for (sidx = 0; sidx < returned && cidx < count; sidx++) {
+			cbuf[cidx] = le32_to_cpu(sdata->channel_array[sidx]);
+			cidx += 1;
+		}
+
+		start_index = cidx;
+
+	} while(remaining);
+
+done:
+	put_cpu();
+	return sbi_err_map_linux_errno(sret.error);
 }
 
 int sbi_mpxy_read_attrs(u32 channelid, u32 base_attrid, u32 attr_count,
@@ -218,7 +310,7 @@ int sbi_mpxy_get_notifications(u32 channelid, void *rx,
 		return -EINVAL;
 
 	get_cpu();
-	sret = sbi_ecall(SBI_EXT_MPXY, SBI_EXT_MPXY_GET_NOTIFICATIONS,
+	sret = sbi_ecall(SBI_EXT_MPXY, SBI_EXT_MPXY_GET_NOTIFICATION_EVENTS,
 			 channelid, 0, 0, 0, 0, 0);
 	if (!sret.error) {
 		memcpy(rx, mpxy->shmem, sret.value);

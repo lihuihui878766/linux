@@ -417,11 +417,12 @@ struct sbi_dbtr_shmem_entry {
 
 enum sbi_ext_mpxy_fid {
 	SBI_EXT_MPXY_SET_SHMEM,
+	SBI_EXT_MPXY_GET_CHANNEL_IDS,
 	SBI_EXT_MPXY_READ_ATTRS,
 	SBI_EXT_MPXY_WRITE_ATTRS,
 	SBI_EXT_MPXY_SEND_MSG_WITH_RESP,
 	SBI_EXT_MPXY_SEND_MSG_NO_RESP,
-	SBI_EXT_MPXY_GET_NOTIFICATIONS,
+	SBI_EXT_MPXY_GET_NOTIFICATION_EVENTS,
 };
 
 enum sbi_mpxy_attr_id {
@@ -670,6 +671,10 @@ struct sbi_mpxy_shmem {
 
 int sbi_mpxy_setup_shmem(unsigned long size, unsigned long phys_addr_lo,
 			 unsigned long phys_addr_hi, unsigned long flags);
+
+int sbi_mpxy_get_num_channels(u32 *channels_count);
+
+int sbi_mpxy_get_channel_ids(u32 *cbuf, unsigned long cbufsize);
 
 int sbi_mpxy_read_attrs(u32 channelid, u32 base_attrid,
 			u32 attr_count, void *attrbuf);
